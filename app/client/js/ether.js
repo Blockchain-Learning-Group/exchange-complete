@@ -1,10 +1,10 @@
 /*
- Initialize web3 instances of blg token, hub and exchange contracts.
+ Initialize web3 instances of token, hub and exchange contracts.
  Load all relevant accounts, balances, orders.
- NOTE web3 globally available as linked in in home.html
+ NOTE web3 globally available as linked in home.html
  */
 
-// Exchange, blgToken, hub contract data
+// Exchange, token, hub contract data
 const exchangeAddress = '0xd9206f77dd8e6557744feb30a12e68d8a09bb043'
 const exchangeJSON = {
   "contract_name": "Exchange",
@@ -1244,7 +1244,7 @@ function loadWeb3() {
   const web3 = new Web3(window.web3.currentProvider) // Metamask
 
   if (web3.isConnected()) {
-    // Create instance of the exchange, blg token and hub
+    // Create instance of the exchange token and hub
     window.token = web3.eth.contract(tokenJSON.abi).at(tokenAddress)
     window.hub = web3.eth.contract(hubJSON.abi).at(hubAddress)
     window.exchange = web3.eth.contract(exchangeJSON.abi).at(exchangeAddress)
@@ -1266,7 +1266,8 @@ function loadWeb3() {
  */
 function initExchangeListeners() {
   // Listen for all exchange events
-  exchange.allEvents({ from: 'latest', to: 'latest' }).watch((error, res) => {
+  exchange.allEvents({ from: 'latest', to: 'latest' })
+  .watch((error, res) => {
     if (error) console.log(error)
 
     console.log(res)
@@ -1275,6 +1276,7 @@ function initExchangeListeners() {
       // Update balances - eth may have been transferred to exchange
       updateETHBalance(defaultAccount)
       const { maker, offerToken, offerAmount, wantToken, wantAmount } = res.args
+
       // Append new order to order book table
       appendOrder(maker, offerToken, offerAmount, wantToken, wantAmount)
       openTransactionSuccessModal('Order Submitted.', res.transactionHash)
@@ -1286,7 +1288,7 @@ function initExchangeListeners() {
       updateETHBalance(defaultAccount)
       updateTokenBalance(defaultAccount)
 
-      // Color the row grey showing it has been filled
+      // Remove row if order executed
       const id = '#' + res.args.offerToken + res.args.offerAmount + res.args.wantToken + res.args.wantAmount
       $(id).remove()
 
@@ -1319,7 +1321,8 @@ function initTokenListeners() {
   })
 
    // Error event
-   token.LogErrorString({ from: 'latest', to: 'latest' }).watch((err, res) => {
+   token.LogErrorString({ from: 'latest', to: 'latest' })
+   .watch((err, res) => {
      if (err) {
        console.log(err)
      } else {
@@ -1352,19 +1355,22 @@ function initTokenListeners() {
    token.balanceOf(user, (err, balance) => {
       // Get the sybmol of the token
       token.symbol((err, symbol) => {
-        $('#blgBalance').text(balance.toNumber() + ' ' + symbol) // convert wei to eth
+        $('#blgBalance').text(balance.toNumber() + ' ' + symbol)
       })
    })
  }
 
  /**
   * Load the contents of the order book.
+  * TODO Get the order book from events! Remove the storage array.
   */
  function loadOrderBook() {
    exchange.getOrderBookIds.call((error, ids) => {
      // Get order data and load for each returned id
      for (let i = 0; i < ids.length; i++) {
        exchange.orderBook_.call(ids[i], (err, order) => {
+         // NOTE if order added, executed and exact same order added again
+         // it will appear twice in the order book. FIXME! Create unique ids, nonce.
          // If the order is not filled then append
          if (!order[5]) {
            appendOrder(order[0], order[1], order[2], order[3], order[4])

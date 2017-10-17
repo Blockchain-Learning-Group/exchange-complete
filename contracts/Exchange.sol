@@ -3,6 +3,10 @@ pragma solidity ^0.4.15;
 import './token/ERC20.sol';
 import './utils/LoggingErrors.sol';
 
+/**
+ * @title Minimalistic Decentralized Exchange
+ * @dev Enables exact match orders to be executed.
+ */
 contract Exchange is LoggingErrors {
   /**
    * Data Structures
@@ -65,6 +69,14 @@ contract Exchange is LoggingErrors {
     * @param  _wantToken The token that is wanted.
     * @param  _wantAmount The amount of tokens wanted.
     * @return The success of this method.
+    * TODO:
+      - ERC20 / ERC20 pairings
+      - Partial fills, matched by ratio not exact
+      - Multiple orders with same parameters to exist
+      - Remove load order book method. Load orders via events
+      - Integrate error logging pattern in place of requires
+      - Move storage of order book off-chain to reduce cost
+    *
     */
    function submitOrder(
      address _offerToken,
@@ -79,10 +91,13 @@ contract Exchange is LoggingErrors {
      require(_wantAmount > 0);
 
      // Sufficent offer token balance
-     /* TODO map the ether to a specific user */
+     /*
+       TODO
+       map the ether to a specific user, therefore they have a balance not
+       just the exchange total.
+      */
      if (_offerToken == address(0))
        require(this.balance >= _offerAmount);
-
      else
        require(ERC20(_offerToken).balanceOf(msg.sender) >= _offerAmount);
 
@@ -91,7 +106,7 @@ contract Exchange is LoggingErrors {
      uint orderIndex;
 
      // check if there is a matching order
-     // Invert to tokens to see if a match exists
+     // Invert the tokens to see if a match exists
      orderId = keccak256(_wantToken, _wantAmount, _offerToken, _offerAmount);
 
      // Check for existence of matching order and that it is not filled
@@ -107,6 +122,15 @@ contract Exchange is LoggingErrors {
          return error('Identical order is already active, Exchange.submitOrder()');
 
        // else add the order to the order book
+       /*
+        NOTE
+        This is overwriting any previously filled orders with the same parameters
+        Overwriting this key in mapping.
+        FIXME The id will exist multiple times in the orderIds_ array and when loaded
+        by ui both will appear to be active and loaded into the order table likely.
+        Create unique ids, integrate some "nonce".
+        */
+       //
        // Add id for DApp to retrieve book
        orderIds_.push(orderId);
 

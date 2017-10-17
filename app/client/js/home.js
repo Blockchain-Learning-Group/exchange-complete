@@ -4,7 +4,7 @@
  */
 
 $(document).ready(() => {
-  // Add a resource to the blg hub
+  // Add a resource to the hub
   $('#submitResource').click(e => {
        e.preventDefault()
 
@@ -51,26 +51,35 @@ $(document).ready(() => {
       return
     }
 
+    // TODO consider token decimals. Similar to ETHe18 below.
+    // FIXME Decimal token offers will be rounded to 0.  ie. 0.1 == 0 and fails.
+
     // If offer token is eth send the ether to the exchange contract
     if (offerToken === 'ETH') {
-        submitOrder(offerToken, offerAmount* 10**18, wantToken, wantAmount, offerAmount * 10**18) // convert to ether
+        // 1e18 wei == 1 ether, conversion below
+        submitOrder(
+          offerToken,
+          offerAmount* 10**18,
+          wantToken,
+          wantAmount,
+          offerAmount * 10**18
+        )
 
     // If the offer token is not eth and therefore some other ERC20 token approve
     // the exchange to spend on sender's behalf
-    } else if (offerToken === 'BLG') {
-      // Need to check token balance TODO move verification on chain
+    } else {
+      // Need to check token balance
       token.balanceOf(window.defaultAccount, (error, balance) => {
         if (balance.toNumber() < offerAmount) {
           alert('Insufficient token balance!')
 
         } else {
-          token.approve(
-            window.exchange.address,
-            offerAmount,
+          token.approve(exchange.address, offerAmount,
             {
-              from: window.defaultAccount,
+              from: defaultAccount,
               gas: 4e6
-            }, (error, tx) => {
+            },
+            (error, tx) => {
               if (error) {
                 console.error(error)
               } else {
@@ -104,7 +113,8 @@ function submitOrder(offerToken, offerAmount, wantToken, wantAmount, value) {
       from: defaultAccount,
       gas : 4e6,
       value: value
-    }, (error, tx) => {
+    },
+    (error, tx) => {
       if (error)
         console.error(error)
       else
