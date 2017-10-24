@@ -3,9 +3,233 @@
  Load all relevant accounts, balances, orders.
  NOTE web3 globally available as linked in home.html
  */
-
-// Exchange, token, hub contract data
+// Exchange, token, hub contract addresses
 const exchangeAddress = '0xd9206f77dd8e6557744feb30a12e68d8a09bb043'
+const tokenAddress = '0x87dec673238cd9fe9bc1479c21f9f8165bc3879b'
+const hubAddress = '0x21808e0d63d2fd3c5579a4425d3e9314ae47c6b9'
+
+$(window).ready(() => {
+  // Approved tokens to trade on the exchange, mapping symbol <> address
+  window.approvedTokens = {
+    'ETH': '0x0000000000000000000000000000000000000000',
+    'BLG': tokenAddress
+  }
+
+  window.tokenAddressToSymbol = {
+    '0x0000000000000000000000000000000000000000': 'ETH',
+    '0x87dec673238cd9fe9bc1479c21f9f8165bc3879b': 'BLG'
+  }
+
+  // Some race conditiion where metamask is slow to be injected wait then connect.
+  if (!window.web3) {
+    setTimeout(() => {
+      // If still no web3 then alert, metamask likely not installed
+      if (!window.web3) {
+        alert('Please install Metamask to use this application!\n https://chrome.google.com/webstore/detail/metamask/nkbihfbeogaeaoehlefnkodbefgpgknn?hl=en')
+      } else {
+        loadWeb3()
+      }
+    }, 500)
+
+  // Metamask is present than connect to it
+  } else {
+    loadWeb3()
+  }
+})
+
+function loadWeb3() {
+  const web3 = new Web3(window.web3.currentProvider) // Metamask
+
+  if (web3.isConnected()) {
+    // Create instance of the exchange token and hub
+    window.token = web3.eth.contract(tokenJSON.abi).at(tokenAddress)
+    window.hub = web3.eth.contract(hubJSON.abi).at(hubAddress)
+    window.exchange = web3.eth.contract(exchangeJSON.abi).at(exchangeAddress)
+    window.defaultAccount = web3.eth.accounts[0]
+
+    // Create relevant listeners for all contracts
+    initTokenListeners()
+    initExchangeListeners()
+
+    // Load balances for the user as well as the order book contents
+    updateETHBalance(defaultAccount)
+    updateTokenBalance(defaultAccount)
+    loadOrderBook()
+  }
+}
+
+/**
+ * Create listeners for the exchange contract.
+ */
+function initExchangeListeners() {
+  // Listen for all exchange events
+  exchange.allEvents({ from: 'latest', to: 'latest' })
+  .watch((error, res) => {
+    if (error) console.log(error)
+
+    console.log(res)
+
+    if (res.event === 'logOrderSubmitted') {
+      // Update balances - eth may have been transferred to exchange
+      updateETHBalance(defaultAccount)
+      const { maker, offerToken, offerAmount, wantToken, wantAmount } = res.args
+
+      // Append new order to order book table
+      appendOrder(maker, offerToken, offerAmount, wantToken, wantAmount)
+      openTransactionSuccessModal('Order Submitted.', res.transactionHash)
+
+    } else if (res.event === 'logOrderExecuted') {
+      openTransactionSuccessModal('Order Executed.', res.transactionHash)
+
+      // Update balances
+      updateETHBalance(defaultAccount)
+      updateTokenBalance(defaultAccount)
+
+      // Remove row if order executed
+      const id = '#' + res.args.offerToken + res.args.offerAmount + res.args.wantToken + res.args.wantAmount
+      $(id).remove()
+
+    } else if (res.event === 'LogErrorString') {
+      updateETHBalance(defaultAccount)
+      alert('Error! \n' + res.args.errorString)
+    }
+  })
+}
+
+/**
+ * Create listeners for the token.
+ */
+function initTokenListeners() {
+  // Tokens minted. Will be the result of submitting a resource to the hub.
+  token.LogTokensMinted({ from: 'latest', to: 'latest' })
+  .watch((err, res) => {
+    if (err) {
+      console.log(err)
+    } else {
+      console.log(res)
+      openTransactionSuccessModal('Tokens minted.', res.transactionHash)
+
+      // If tokens minted to user update their balance
+      if (res.args.to == defaultAccount) {
+        updateETHBalance(defaultAccount)
+        updateTokenBalance(defaultAccount)
+      }
+    }
+  })
+
+   // Error event
+   token.LogErrorString({ from: 'latest', to: 'latest' })
+   .watch((err, res) => {
+     if (err) {
+       console.log(err)
+     } else {
+       updateETHBalance(defaultAccount)
+       alert('Error! \n' + res.args.errorString)
+     }
+   })
+ }
+
+ /**
+  * Update the the default account's ether balance.
+  * @param  {String} user The EOA address.
+  */
+ function updateETHBalance(user) {
+   web3.eth.getBalance(user, (err, balance) => {
+     if (err) {
+       console.error(err)
+     } else {
+       $('#etherBalance').text(balance.toNumber() / 10**18 + ' ETH') // convert wei to eth
+     }
+   })
+ }
+
+ /**
+  * Update the default account's token balance.
+  * @param  {String} user The EOA address.
+  */
+ function updateTokenBalance(user) {
+   // Get the balance of the user
+   token.balanceOf(user, (err, balance) => {
+      // Get the sybmol of the token
+      token.symbol((err, symbol) => {
+        $('#blgBalance').text(balance.toNumber() + ' ' + symbol)
+      })
+   })
+ }
+
+ /**
+  * Load the contents of the order book.
+  * TODO Get the order book from events! Remove the storage array.
+  */
+ function loadOrderBook() {
+   exchange.getOrderBookIds.call((error, ids) => {
+     // Get order data and load for each returned id
+     for (let i = 0; i < ids.length; i++) {
+       exchange.orderBook_.call(ids[i], (err, order) => {
+         // NOTE if order added, executed and exact same order added again
+         // it will appear twice in the order book. FIXME! Create unique ids, nonce.
+         // If the order is not filled then append
+         if (!order[5]) {
+           appendOrder(order[0], order[1], order[2], order[3], order[4])
+         }
+       })
+     }
+   })
+ }
+
+/*
+ Utils
+ */
+
+/**
+ * Append a new order to the order book table.
+ * @param  {String} maker  The address of the user who created the order.
+ * @param  {String} offerToken  The address of the token contract offered.
+ * @param  {Number} offerAmount The amount of tokens offered.
+ * @param  {String} wantToken  The address of the token contract wanted.
+ * @param  {Number} wantAmount The amount of tokens wanted.
+ * when offering ether to transfer the value to the exchange to broker the trade.
+ */
+function appendOrder(maker, offerToken, offerAmount, wantToken, wantAmount) {
+   const offerSymbol = tokenAddressToSymbol[offerToken]
+   const wantSymbol = tokenAddressToSymbol[wantToken]
+   let offerAmountAdjusted = offerAmount
+   let wantAmountAdjusted = wantAmount
+
+   // Convert eth amount from wei
+   if (offerSymbol === 'ETH') {
+     offerAmountAdjusted = offerAmount / 10**18
+   } else if (wantSymbol === 'ETH') {
+     wantAmountAdjusted = wantAmount / 10**18
+   }
+
+   $('#orderBook').append(
+     '<tr id='
+       // Sufficient ID for now as only one order can exist with these params at this time.
+       + offerToken + offerAmount + wantToken + wantAmount
+       +' ><td>'
+       + offerSymbol + '</td><td>'
+       + offerAmountAdjusted + '</td><td>'
+       + wantSymbol + '</td><td>'
+       + wantAmountAdjusted + '</td><td>'
+       + maker
+     + '</td><</tr>'
+   )
+ }
+
+/**
+* Open the successful transaction modal
+* @param  {String} tx The transaction hash.
+*/
+function openTransactionSuccessModal(msg, tx) {
+ const href = 'https://kovan.etherscan.io/tx/' + tx
+ $('#txHash').empty()
+ $('#txHash').append('<p>'+ msg +'</p>')
+ $('#txHash').append('</br><p>Here is your transaction hash:</p>')
+ $('#txHash').append('<a href='+ href +'>'+ tx +'</a>')
+ $('#successModal').modal('show')
+}
+
 const exchangeJSON = {
   "contract_name": "Exchange",
   "abi": [
@@ -289,7 +513,6 @@ const exchangeJSON = {
   "updated_at": 1507672058414
 }
 
-const tokenAddress = '0x87dec673238cd9fe9bc1479c21f9f8165bc3879b'
 const tokenJSON = {
   "contract_name": "Token",
   "abi": [
@@ -850,7 +1073,6 @@ const tokenJSON = {
   "updated_at": 1507669773127
 }
 
-const hubAddress = '0x21808e0d63d2fd3c5579a4425d3e9314ae47c6b9'
 const hubJSON = {
   "contract_name": "Hub",
   "abi": [
@@ -1209,226 +1431,4 @@ const hubJSON = {
   },
   "schema_version": "0.0.5",
   "updated_at": 1507669773142
-}
-
-$(window).ready(() => {
-  // Approved tokens to trade on the exchange, mapping symbol <> address
-  window.approvedTokens = {
-    'ETH': '0x0000000000000000000000000000000000000000',
-    'BLG': tokenAddress
-  }
-
-  window.tokenAddressToSymbol = {
-    '0x0000000000000000000000000000000000000000': 'ETH',
-    '0x87dec673238cd9fe9bc1479c21f9f8165bc3879b': 'BLG'
-  }
-
-  // Some race conditiion where metamask is slow to be injected wait then connect.
-  if (!window.web3) {
-    setTimeout(() => {
-      // If still no web3 then alert, metamask likely not installed
-      if (!window.web3) {
-        alert('Please install Metamask to use this application!\n https://chrome.google.com/webstore/detail/metamask/nkbihfbeogaeaoehlefnkodbefgpgknn?hl=en')
-      } else {
-        loadWeb3()
-      }
-    }, 500)
-
-  // Metamask is present than connect to it
-  } else {
-    loadWeb3()
-  }
-})
-
-function loadWeb3() {
-  const web3 = new Web3(window.web3.currentProvider) // Metamask
-
-  if (web3.isConnected()) {
-    // Create instance of the exchange token and hub
-    window.token = web3.eth.contract(tokenJSON.abi).at(tokenAddress)
-    window.hub = web3.eth.contract(hubJSON.abi).at(hubAddress)
-    window.exchange = web3.eth.contract(exchangeJSON.abi).at(exchangeAddress)
-    window.defaultAccount = web3.eth.accounts[0]
-
-    // Create relevant listeners for all contracts
-    initTokenListeners()
-    initExchangeListeners()
-
-    // Load balances for the user as well as the order book contents
-    updateETHBalance(defaultAccount)
-    updateTokenBalance(defaultAccount)
-    loadOrderBook()
-  }
-}
-
-/**
- * Create listeners for the exchange contract.
- */
-function initExchangeListeners() {
-  // Listen for all exchange events
-  exchange.allEvents({ from: 'latest', to: 'latest' })
-  .watch((error, res) => {
-    if (error) console.log(error)
-
-    console.log(res)
-
-    if (res.event === 'logOrderSubmitted') {
-      // Update balances - eth may have been transferred to exchange
-      updateETHBalance(defaultAccount)
-      const { maker, offerToken, offerAmount, wantToken, wantAmount } = res.args
-
-      // Append new order to order book table
-      appendOrder(maker, offerToken, offerAmount, wantToken, wantAmount)
-      openTransactionSuccessModal('Order Submitted.', res.transactionHash)
-
-    } else if (res.event === 'logOrderExecuted') {
-      openTransactionSuccessModal('Order Executed.', res.transactionHash)
-
-      // Update balances
-      updateETHBalance(defaultAccount)
-      updateTokenBalance(defaultAccount)
-
-      // Remove row if order executed
-      const id = '#' + res.args.offerToken + res.args.offerAmount + res.args.wantToken + res.args.wantAmount
-      $(id).remove()
-
-    } else if (res.event === 'LogErrorString') {
-      updateETHBalance(defaultAccount)
-      alert('Error! \n' + res.args.errorString)
-    }
-  })
-}
-
-/**
- * Create listeners for the token.
- */
-function initTokenListeners() {
-  // Tokens minted. Will be the result of submitting a resource to the hub.
-  token.LogTokensMinted({ from: 'latest', to: 'latest' })
-  .watch((err, res) => {
-    if (err) {
-      console.log(err)
-    } else {
-      console.log(res)
-      openTransactionSuccessModal('Tokens minted.', res.transactionHash)
-
-      // If tokens minted to user update their balance
-      if (res.args.to == defaultAccount) {
-        updateETHBalance(defaultAccount)
-        updateTokenBalance(defaultAccount)
-      }
-    }
-  })
-
-   // Error event
-   token.LogErrorString({ from: 'latest', to: 'latest' })
-   .watch((err, res) => {
-     if (err) {
-       console.log(err)
-     } else {
-       updateETHBalance(defaultAccount)
-       alert('Error! \n' + res.args.errorString)
-     }
-   })
- }
-
- /**
-  * Update the the default account's ether balance.
-  * @param  {String} user The EOA address.
-  */
- function updateETHBalance(user) {
-   web3.eth.getBalance(user, (err, balance) => {
-     if (err) {
-       console.error(err)
-     } else {
-       $('#etherBalance').text(balance.toNumber() / 10**18 + ' ETH') // convert wei to eth
-     }
-   })
- }
-
- /**
-  * Update the default account's token balance.
-  * @param  {String} user The EOA address.
-  */
- function updateTokenBalance(user) {
-   // Get the balance of the user
-   token.balanceOf(user, (err, balance) => {
-      // Get the sybmol of the token
-      token.symbol((err, symbol) => {
-        $('#blgBalance').text(balance.toNumber() + ' ' + symbol)
-      })
-   })
- }
-
- /**
-  * Load the contents of the order book.
-  * TODO Get the order book from events! Remove the storage array.
-  */
- function loadOrderBook() {
-   exchange.getOrderBookIds.call((error, ids) => {
-     // Get order data and load for each returned id
-     for (let i = 0; i < ids.length; i++) {
-       exchange.orderBook_.call(ids[i], (err, order) => {
-         // NOTE if order added, executed and exact same order added again
-         // it will appear twice in the order book. FIXME! Create unique ids, nonce.
-         // If the order is not filled then append
-         if (!order[5]) {
-           appendOrder(order[0], order[1], order[2], order[3], order[4])
-         }
-       })
-     }
-   })
- }
-
-/*
- Utils
- */
-
-/**
- * Append a new order to the order book table.
- * @param  {String} maker  The address of the user who created the order.
- * @param  {String} offerToken  The address of the token contract offered.
- * @param  {Number} offerAmount The amount of tokens offered.
- * @param  {String} wantToken  The address of the token contract wanted.
- * @param  {Number} wantAmount The amount of tokens wanted.
- * when offering ether to transfer the value to the exchange to broker the trade.
- */
-function appendOrder(maker, offerToken, offerAmount, wantToken, wantAmount) {
-   const offerSymbol = tokenAddressToSymbol[offerToken]
-   const wantSymbol = tokenAddressToSymbol[wantToken]
-   let offerAmountAdjusted = offerAmount
-   let wantAmountAdjusted = wantAmount
-
-   // Convert eth amount from wei
-   if (offerSymbol === 'ETH') {
-     offerAmountAdjusted = offerAmount / 10**18
-   } else if (wantSymbol === 'ETH') {
-     wantAmountAdjusted = wantAmount / 10**18
-   }
-
-   $('#orderBook').append(
-     '<tr id='
-       // Sufficient ID for now as only one order can exist with these params at this time.
-       + offerToken + offerAmount + wantToken + wantAmount
-       +' ><td>'
-       + offerSymbol + '</td><td>'
-       + offerAmountAdjusted + '</td><td>'
-       + wantSymbol + '</td><td>'
-       + wantAmountAdjusted + '</td><td>'
-       + maker
-     + '</td><</tr>'
-   )
- }
-
-/**
-* Open the successful transaction modal
-* @param  {String} tx The transaction hash.
-*/
-function openTransactionSuccessModal(msg, tx) {
- const href = 'https://kovan.etherscan.io/tx/' + tx
- $('#txHash').empty()
- $('#txHash').append('<p>'+ msg +'</p>')
- $('#txHash').append('</br><p>Here is your transaction hash:</p>')
- $('#txHash').append('<a href='+ href +'>'+ tx +'</a>')
- $('#successModal').modal('show')
 }
